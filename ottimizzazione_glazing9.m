@@ -229,11 +229,28 @@ for i = 1:num_glazing
     clean_string_poscar = lower(strtrim(Position_characteristic));
     Storm_shutter_opt = string(M_glazing{i, 10});
     clean_string_shutter = lower(strtrim(Storm_shutter_opt));
+    Bulkhead_position = string(M_glazing{i, 11});
+    clean_string_bulkhead = lower(strtrim(Bulkhead_position));
 
-    if clean_string_shutter == "not providing storm shutter"
+    % --- Storm shutter requirement ---
+    shutter_required = false;
+    
+    switch clean_string_bulkhead
+    
+        case "front bulkhead"
+            if h < (0.02 * L + 2 * h_std)
+                shutter_required = true;
+            end
+        case "side bulkhead"
+            if h < (0.02 * L + h_std)
+                shutter_required = true;
+            end
+        otherwise
+            shutter_required = false;
+    end
+    % --- Robustness factor f_E ---
+    if shutter_required && clean_string_shutter == "not providing storm shutter and complying with equivalent glazing criteria"
         f_E(i) = 1.5;
-    elseif clean_string_shutter == "providing storm shutter"
-        f_E(i) = 1.0;
     else
         f_E(i) = 1.0;
     end
@@ -732,28 +749,57 @@ fprintf('=======================================================================
 % LOCAL FUNCTIONS
 % =========================================================================
 function [plies_mat, interlayer_t] = parse_ply_materials(M_glazing, i, num_tot_cols)
+
+    % -------------------------------------------------------------
+    % Dynamically read all ply materials
+    % -------------------------------------------------------------
     plies_mat = strings(0, 1);
-    interlayer_t = [];
-    t0 = M_glazing{i, 17};
-    if iscell(t0), t0 = t0{1}; end
-    interlayer_t(1, 1) = double(t0(1));
+
     col_idx = 20;
+
     while col_idx <= num_tot_cols
+
         mat_val = M_glazing{i, col_idx};
-        if iscell(mat_val), str_mat = string(mat_val{1}); else, str_mat = string(mat_val); end
-        if ismissing(str_mat) || strtrim(str_mat) == "" || lower(strtrim(str_mat)) == "nan"
+
+        if iscell(mat_val)
+            str_mat = string(mat_val{1});
+        else
+            str_mat = string(mat_val);
+        end
+
+        if ismissing(str_mat) || ...
+           strtrim(str_mat) == "" || ...
+           lower(strtrim(str_mat)) == "nan"
             break;
         end
+
         plies_mat(end + 1, 1) = lower(strtrim(str_mat)); %#ok<AGROW>
-        if col_idx + 2 <= num_tot_cols
-            t_int_val = M_glazing{i, col_idx + 2};
-            if iscell(t_int_val), t_int_val = t_int_val{1}; end
-            if isempty(t_int_val) || (isnumeric(t_int_val) && isnan(t_int_val))
-                t_int_val = 0;
-            end
-            interlayer_t(end + 1, 1) = double(t_int_val(1)); %#ok<AGROW>
-        end
+
+        % Next ply material column
         col_idx = col_idx + 2;
+    end
+
+    % -------------------------------------------------------------
+    % Common interlayer thickness from column 17
+    % -------------------------------------------------------------
+    n_plies = length(plies_mat);
+
+    raw_tint = M_glazing{i, 17};
+
+    if iscell(raw_tint)
+        raw_tint = raw_tint{1};
+    end
+
+    if isempty(raw_tint) || ...
+       (isnumeric(raw_tint) && isnan(raw_tint))
+
+        interlayer_t = [];
+
+    else
+        t_int_value = double(raw_tint(1));
+
+        % Dynamically generate n_plies - 1 identical interlayers
+        interlayer_t = repmat(t_int_value, max(n_plies - 1, 0), 1);
     end
 end
 
@@ -822,7 +868,7 @@ function [t_eq, delta_max] = compute_teq_and_deflection(t_vec, glazing_type, ...
             for k = 1:(n - 1)
                 t1 = t_current;
                 t2 = t_vec(k + 1);
-                t_int = interlayer_t(min(k, length(interlayer_t)));
+                t_int = interlayer_t(k);
                 h_s = 0.5 * (t1 + t2) + t_int;
                 t_sk2 = (h_s * t2) / (t1 + t2);
                 t_sk1 = (h_s * t1) / (t1 + t2);
