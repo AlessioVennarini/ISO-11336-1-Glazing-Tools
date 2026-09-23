@@ -117,6 +117,9 @@ Sill_Height_Status = repmat("VALID", num_glazing, 1);
 valid_shutter = false(num_glazing, 1);
 Storm_Shutter_Status = repmat("VALID", num_glazing, 1);
 
+valid_deadlight = false(num_glazing, 1);
+Deadlight_Status = repmat("VALID", num_glazing, 1);
+
 p_D = zeros(num_glazing, 1);
 f_E = zeros(num_glazing, 1); 
 p_DE_vec = zeros(num_glazing, 1);
@@ -513,13 +516,34 @@ for i = 1:num_glazing
         end
     end
 
-    % --- Robustness Factor f_E ---
-    if clean_string_shutter == "not providing storm shutter"
+    % --- Storm Shutter Requirement and Robustness Factor f_E ---
+    Bulkhead_position = string(M_glazing{i, 11});
+    clean_string_bulkhead = lower(strtrim(Bulkhead_position));
+    shutter_required = false;
+    z_lim_front = 0.02 * L + 2 * h_std;
+    z_lim_side= 0.02 * L + h_std;
+
+    switch clean_string_bulkhead
+        case "front bulkhead"
+            if h < (0.02 * L + 2 * h_std)
+                shutter_required = true;
+            end
+        case "side bulkhead"
+            if h < (0.02 * L + h_std)
+                shutter_required = true;
+            end
+        otherwise
+            shutter_required = false;
+    end
+
+    % Robustness factor f_E
+    if shutter_required && clean_string_shutter == "not providing storm shutter and complying with equivalent glazing criteria"
+        % Equivalent glazing adopted in lieu of the required storm shutter
         f_E(i) = 1.5;
-    elseif clean_string_shutter == "providing storm shutter"
-        f_E(i) = 1.0;
     else
-        f_E(i) = 1.0; 
+        % Storm shutter provided, storm shutter not required, or
+        % equivalent glazing criteria not satisfied
+        f_E(i) = 1.0;
     end
     
     % --- Pressure p_D Calculation ---
@@ -960,28 +984,28 @@ for i = 1:num_glazing
                 plies_mat = [plies_mat; lower(strtrim(str_mat))]; %#ok<AGROW>
                 plies_t = [plies_t; double(val_t)]; %#ok<AGROW>
                 
-                % Check interlayer thickness (if columns permit)
-                if col_idx + 3 <= num_tot_cols
-                    t_int_val = M_glazing{i, col_idx + 2};
-                    if iscell(t_int_val), val_tint = t_int_val{1}; else, val_tint = t_int_val; end
-                    
-                    if isempty(val_tint) || (isnumeric(val_tint) && isnan(val_tint)) || ...
-                       (isstring(val_tint) && (ismissing(val_tint) || strtrim(val_tint) == "")) || ...
-                       (ischar(val_tint) && strtrim(val_tint) == "")
-                        
-                        val_tint = 0;
-                    else
-                        val_tint = double(val_tint(1));
-                        if isnan(val_tint), val_tint = 0; end
-                    end
-                    interlayer_t = [interlayer_t; val_tint]; %#ok<AGROW>
-                end
-                
                 col_idx = col_idx + 2;
             end
             
-            if isempty(interlayer_t)
-                interlayer_t = t_min;
+            % --- Generate identical interlayers from the single t_int in column 17 ---
+            n_plies = length(plies_t);
+            
+            raw_tint = M_glazing{i, 17};
+            
+            if iscell(raw_tint)
+                raw_tint = raw_tint{1};
+            end
+            
+            if isempty(raw_tint) || ...
+               (isnumeric(raw_tint) && isnan(raw_tint))
+            
+                interlayer_t = [];
+            
+            else
+                t_int_value = double(raw_tint(1));
+            
+                % One interlayer between each pair of adjacent plies
+                interlayer_t = repmat(t_int_value, max(n_plies - 1, 0), 1);
             end
             
             plies_t_cell{i} = plies_t;
@@ -1055,7 +1079,12 @@ for i = 1:num_glazing
                     end
                     G_interlayer_vec(i) = G_interlayer;
                     
-                    a_dim = min([a_p(i), b_p(i), d(i)]);
+                    if macro_category == "rectangle_equiv"
+                        a_dim = min(a_p(i), b_p(i));
+                    elseif macro_category == "circle_equiv"
+                        a_dim = d(i);
+                    end
+
                     if isnan(a_dim), a_dim = b_in; end
                     a_dim_vec(i) = a_dim;
                     
@@ -1175,7 +1204,7 @@ for i = 1:num_glazing
                 t_current_f_vec_cell{i}  = t_current_f_vec;
                 
                 t_eq(i) = t_current_accumulated;
-                    
+                
                 if t_eq(i) < t_0_panel(i)
                     current_status_typeA_collaborating = sprintf("INVALID (t_eq = %.2f mm < required t_0 = %.2f mm)", t_eq(i), t_0_panel(i));
                     warning('Glazing %d (Laminate Type A - Collaborating): Equivalent thickness t_eq (%.2f mm) is below required t_0 (%.2f mm).', i, t_eq(i), t_0_panel(i));
@@ -1521,50 +1550,76 @@ for i = 1:num_glazing
     valid(i) = ~in_critical_zone(i) || (Area <= 850000);
     if ~valid(i), Status(i) = "INVALID (Area too large)"; end
     
-    
     % --- Storm Shutter Limitation ---
-    Bulkhead_position = string(M_glazing{i, 11});
-    clean_string_bulkhead = lower(strtrim(Bulkhead_position));
-    shutter_required = false;
-    
-    switch clean_string_bulkhead
-        case "front bulkhead"
-            if h < (0.02 * L + 2 * h_std), shutter_required = true; end
-        case "side bulkhead"
-            if h < (0.02 * L + h_std), shutter_required = true; end
-        otherwise
-            shutter_required = false;
-    end
-    
-    if strcmp(glazing_type, "Monolithic")
-        if exist('current_status_monolithic', 'var') && startsWith(current_status_monolithic, "VALID")
-            is_monolithic = true;
-        else
-            is_monolithic = false;
-            warning('Glazing %d: Panel is set as Monolithic, but the monolithic evaluation is INVALID. Setting is_monolithic = false.', i);
-        end
-    else
-        is_monolithic = false;
-    end 
-    
-    if shutter_required && is_monolithic
-        valid_shutter(i) = false;
-        Storm_Shutter_Status(i) = "INVALID (Storm shutter required: monolithic panel cannot be considered as a storm shutter)";
-        warning('Glazing %d: Storm shutter is required, but a monolithic panel cannot act as a storm shutter. It must be configured as a laminate.', i);
-        
-    elseif shutter_required && ~is_monolithic
-        valid_shutter(i) = strcmp(clean_string_shutter, 'providing storm shutter');
-        if ~valid_shutter(i)
-            Storm_Shutter_Status(i) = "INVALID (Storm shutter required but not provided)";
-            warning('Glazing %d: Storm shutter is required and the panel is laminated, but "providing storm shutter" was not selected.', i);
-        else
-            Storm_Shutter_Status(i) = "VALID";
-        end
-        
-    else
+    if ~shutter_required
+        % Sec. 8.2 storm shutter requirement does not apply
         valid_shutter(i) = true;
-        Storm_Shutter_Status(i) = "VALID (Not required)";
+        if clean_string_poscar == "hull side shell"
+            Storm_Shutter_Status(i) = "NOT REQUIRED (Deadlight / secondary barrier check applies)";
+        else
+            Storm_Shutter_Status(i) = "VALID (Storm shutter not required)";
+        end
+
+    elseif clean_string_shutter == "providing storm shutter"
+        % Required physical storm shutter is provided
+        valid_shutter(i) = true;
+        Storm_Shutter_Status(i) = "VALID (Storm shutter provided)";
+
+    elseif clean_string_shutter == "not providing storm shutter and complying with equivalent glazing criteria"
+        % No physical storm shutter is provided, but the glazing is
+        % declared to comply with the equivalent glazing criteria
+        valid_shutter(i) = true;
+        Storm_Shutter_Status(i) = "VALID (Equivalent glazing criteria satisfied)";
+
+    elseif clean_string_shutter == "not providing storm shutter and not complying with equivalent glazing criteria"
+        % Neither the required storm shutter nor a compliant
+        % equivalent glazing solution is provided
+        valid_shutter(i) = false;
+        Storm_Shutter_Status(i) = "INVALID (Storm shutter required: equivalent glazing criteria not satisfied)";
+
+        warning(['Glazing %d: Storm shutter is required, but it is not provided ' ...
+                 'and the equivalent glazing criteria are not satisfied.'], i);
+    else
+        % Input not recognized
+        valid_shutter(i) = false;
+        Storm_Shutter_Status(i) = "INVALID (Unrecognized storm shutter option)";
+        warning('Glazing %d: Unrecognized storm shutter option "%s".', i, clean_string_shutter);
     end
+
+
+    % --- Deadlight / Equivalent Secondary Barrier Limitation ---
+    if clean_string_poscar == "hull side shell"
+
+        if clean_string_shutter == "providing deadlight"
+            % Physical deadlight is provided
+            valid_deadlight(i) = true;
+            Deadlight_Status(i) = "VALID (Deadlight provided)";
+
+        elseif clean_string_shutter ==  "not providing deadlight and complying with equivalent secondary barrier criteria"
+            % No physical deadlight is provided, but a compliant
+            % equivalent secondary barrier is provided
+            valid_deadlight(i) = true;
+            Deadlight_Status(i) = "VALID (Equivalent secondary barrier criteria satisfied)";
+
+        elseif clean_string_shutter == "not providing deadlight and not complying with equivalent secondary barrier criteria"
+            % Neither a deadlight nor a compliant equivalent
+            % secondary barrier is provided
+            valid_deadlight(i) = false;
+            Deadlight_Status(i) = "INVALID (Deadlight required: equivalent secondary barrier criteria not satisfied)";
+            warning('Glazing %d: Deadlight is required, but it is not provided and the equivalent secondary barrier criteria are not satisfied.', i);
+        else
+            % Invalid input for a hull side shell opening
+            valid_deadlight(i) = false;
+            Deadlight_Status(i) = "INVALID (Deadlight option required for hull side shell opening)";
+            warning('Glazing %d: Hull side shell opening requires a deadlight or equivalent secondary barrier option.', i);
+        end
+    else
+        % Sec. 8.3 does not apply
+        valid_deadlight(i) = true;
+        Deadlight_Status(i) = "NOT REQUIRED (Storm shutter check or other conditions apply)";
+
+    end
+    
 end
 
 % =========================================================================
@@ -1600,6 +1655,7 @@ Final_Verification_Table = table(...
     Sill_LL_limit_vec(:), ...
     Sill_Height_Status(:), ...
     Storm_Shutter_Status(:), ...
+    Deadlight_Status(:), ...
     Glazing_Status(:), ...
     Deflection_Status(:), ...
     p_D(:), ...
@@ -1611,7 +1667,7 @@ Final_Verification_Table = table(...
     'VariableNames', { ...
         'Element_ID', 'Position_x', 'Position_y', 'Position_h', 'Area', ...
         'In_Critical_Zone', 'Area_Status', 'Sec5_4_Min_Sill_DWL_m', 'Sec5_4_Min_Sill_LL_m', 'Sec5_4_Sill_Height_Status', ...
-        'Storm_Shutter_Status', 'Glazing_Status', ...
+        'Storm_Shutter_Status', 'Deadlight_Status', 'Glazing_Status',...
         'Deflection_Status', 'Design_Pressure_pD', 'Factor_fE', 'Engineering_Pressure_pDE' , ...
         ' Basic pane (material) thickness t_0', ' Basic pane thickness t_0' , 'Equivalent thickness t_eq'});
 
@@ -1664,26 +1720,22 @@ for i = 1:height(Final_Verification_Table)
 
     fprintf('  %-38s : %s\n', 'Area status', ...
         char(string(Final_Verification_Table.Area_Status(i))));
-
     fprintf('  %-38s : %.4f m\n', 'Minimum sill height - DWL', ...
         Final_Verification_Table.Sec5_4_Min_Sill_DWL_m(i));
-
     if isnan(Final_Verification_Table.Sec5_4_Min_Sill_LL_m(i))
         sill_LL_txt = 'N/A';
     else
         sill_LL_txt = sprintf('%.4f m', ...
             Final_Verification_Table.Sec5_4_Min_Sill_LL_m(i));
     end
-
     fprintf('  %-38s : %s\n', 'Minimum sill height - Load Line', ...
         sill_LL_txt);
-
     fprintf('  %-38s : %s\n', 'Sill height status', ...
         char(string(Final_Verification_Table.Sec5_4_Sill_Height_Status(i))));
-
     fprintf('  %-38s : %s\n', 'Storm shutter status', ...
         char(string(Final_Verification_Table.Storm_Shutter_Status(i))));
-
+    fprintf('  %-38s : %s\n', 'Deadlight status', ...
+        char(string(Final_Verification_Table.Deadlight_Status(i))));
 
     % ---------------------------------------------------------------------
     % STRUCTURAL CALCULATION
@@ -1692,25 +1744,21 @@ for i = 1:height(Final_Verification_Table)
 
     fprintf('  %-38s : %.4f\n', 'Design pressure p_D', ...
         Final_Verification_Table.Design_Pressure_pD(i));
-
     fprintf('  %-38s : %.4f\n', 'Factor f_E', ...
         Final_Verification_Table.Factor_fE(i));
-
     fprintf('  %-38s : %.4f\n', 'Engineering pressure p_DE', ...
         Final_Verification_Table.Engineering_Pressure_pDE(i));
 
     % Access the last three columns by index because the original
     % variable names contain spaces and descriptive text.
-    t0_material_print = Final_Verification_Table{i, 17};
-    t0_panel_print    = Final_Verification_Table{i, 18};
-    teq_print         = Final_Verification_Table{i, 19};
+    t0_material_print = Final_Verification_Table{i, 18};
+    t0_panel_print    = Final_Verification_Table{i, 19};
+    teq_print         = Final_Verification_Table{i, 20};
 
     fprintf('  %-38s : %.4f mm\n', ...
         'Basic pane thickness t_0 (material)', t0_material_print);
-
     fprintf('  %-38s : %.4f mm\n', ...
         'Basic pane thickness t_0 (panel)', t0_panel_print);
-
     fprintf('  %-38s : %.4f mm\n', ...
         'Equivalent thickness t_eq', teq_print);
 
@@ -1719,10 +1767,8 @@ for i = 1:height(Final_Verification_Table)
     % VERIFICATION RESULTS
     % ---------------------------------------------------------------------
     fprintf('\n[ VERIFICATION RESULTS ]\n');
-
     fprintf('  %-38s : %s\n', 'Deflection status', ...
         char(string(Final_Verification_Table.Deflection_Status(i))));
-
     fprintf('  %-38s : %s\n', 'Glazing status', ...
         char(string(Final_Verification_Table.Glazing_Status(i))));
 
@@ -1730,10 +1776,31 @@ for i = 1:height(Final_Verification_Table)
     % ---------------------------------------------------------------------
     % FINAL VALIDITY
     % ---------------------------------------------------------------------
+    area_status_txt = string(Final_Verification_Table.Area_Status(i));
+    sill_height_status_txt = string(Final_Verification_Table.Sec5_4_Sill_Height_Status(i));
+    storm_shutter_status_txt = string(Final_Verification_Table.Storm_Shutter_Status(i));
+    deadlight_status_txt = string(Final_Verification_Table.Deadlight_Status(i));
+    deflection_status_txt = string(Final_Verification_Table.Deflection_Status(i));
     glazing_status_txt = string(Final_Verification_Table.Glazing_Status(i));
 
-    if startsWith(upper(strtrim(glazing_status_txt)), "VALID")
+    area_valid = ...
+        ~startsWith(upper(strtrim(area_status_txt)), "INVALID");
+    sill_height_valid = ...
+        ~startsWith(upper(strtrim(sill_height_status_txt)), "INVALID");
+    storm_shutter_valid = ...
+        ~startsWith(upper(strtrim(storm_shutter_status_txt)), "INVALID");
+    deadlight_valid = ...
+        ~startsWith(upper(strtrim(deadlight_status_txt)), "INVALID");
+    deflection_valid = ...
+        ~startsWith(upper(strtrim(deflection_status_txt)), "INVALID");
+    glazing_valid = ...
+        ~startsWith(upper(strtrim(glazing_status_txt)), "INVALID");
+
+    if area_valid && sill_height_valid && storm_shutter_valid && ...
+            deadlight_valid && deflection_valid && glazing_valid
+
         final_validity = 'VALID';
+
     else
         final_validity = 'INVALID';
     end
